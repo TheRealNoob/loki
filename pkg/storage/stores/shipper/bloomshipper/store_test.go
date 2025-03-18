@@ -15,13 +15,15 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/require"
 
-	"github.com/grafana/loki/pkg/storage"
-	v1 "github.com/grafana/loki/pkg/storage/bloom/v1"
-	"github.com/grafana/loki/pkg/storage/chunk/cache"
-	"github.com/grafana/loki/pkg/storage/chunk/client"
-	"github.com/grafana/loki/pkg/storage/chunk/client/local"
-	storageconfig "github.com/grafana/loki/pkg/storage/config"
-	"github.com/grafana/loki/pkg/storage/stores/shipper/bloomshipper/config"
+	"github.com/grafana/loki/v3/pkg/storage"
+	v1 "github.com/grafana/loki/v3/pkg/storage/bloom/v1"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/cache"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/local"
+	storageconfig "github.com/grafana/loki/v3/pkg/storage/config"
+	"github.com/grafana/loki/v3/pkg/storage/stores/shipper/bloomshipper/config"
+	"github.com/grafana/loki/v3/pkg/storage/types"
+	"github.com/grafana/loki/v3/pkg/util/mempool"
 )
 
 func newMockBloomStore(t *testing.T) (*BloomStore, string, error) {
@@ -34,7 +36,7 @@ func newMockBloomStore(t *testing.T) (*BloomStore, string, error) {
 func newMockBloomStoreWithWorkDir(t *testing.T, workDir, storeDir string) (*BloomStore, string, error) {
 	periodicConfigs := []storageconfig.PeriodConfig{
 		{
-			ObjectType: storageconfig.StorageTypeFileSystem,
+			ObjectType: types.StorageTypeFileSystem,
 			From:       parseDayTime("2024-01-01"),
 			IndexTables: storageconfig.IndexPeriodicTableConfig{
 				PeriodicTableConfig: storageconfig.PeriodicTableConfig{
@@ -43,7 +45,7 @@ func newMockBloomStoreWithWorkDir(t *testing.T, workDir, storeDir string) (*Bloo
 				}},
 		},
 		{
-			ObjectType: storageconfig.StorageTypeFileSystem,
+			ObjectType: types.StorageTypeFileSystem,
 			From:       parseDayTime("2024-02-01"),
 			IndexTables: storageconfig.IndexPeriodicTableConfig{
 				PeriodicTableConfig: storageconfig.PeriodicTableConfig{
@@ -58,10 +60,8 @@ func newMockBloomStoreWithWorkDir(t *testing.T, workDir, storeDir string) (*Bloo
 			Directory: storeDir,
 		},
 		BloomShipperConfig: config.Config{
-			WorkingDirectory: []string{workDir},
-			BlocksDownloadingQueue: config.DownloadingQueueConfig{
-				WorkersCount: 1,
-			},
+			WorkingDirectory:    []string{workDir},
+			DownloadParallelism: 1,
 			BlocksCache: config.BlocksCacheConfig{
 				SoftLimit:     1 << 20,
 				HardLimit:     2 << 20,
@@ -78,7 +78,7 @@ func newMockBloomStoreWithWorkDir(t *testing.T, workDir, storeDir string) (*Bloo
 
 	metasCache := cache.NewMockCache()
 	blocksCache := NewFsBlocksCache(storageConfig.BloomShipperConfig.BlocksCache, prometheus.NewPedanticRegistry(), logger)
-	store, err := NewBloomStore(periodicConfigs, storageConfig, metrics, metasCache, blocksCache, reg, logger)
+	store, err := NewBloomStore(periodicConfigs, storageConfig, metrics, metasCache, blocksCache, &mempool.SimpleHeapAllocator{}, reg, logger)
 	if err == nil {
 		t.Cleanup(store.Stop)
 	}
@@ -353,7 +353,7 @@ func TestBloomStore_TenantFilesForInterval(t *testing.T) {
 		tenantFiles, err := store.TenantFilesForInterval(
 			ctx,
 			NewInterval(parseTime("2024-01-18 00:00"), parseTime("2024-02-12 00:00")),
-			func(tenant string, object client.StorageObject) bool {
+			func(tenant string, _ client.StorageObject) bool {
 				return tenant == "1"
 			},
 		)

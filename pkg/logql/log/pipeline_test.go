@@ -7,7 +7,7 @@ import (
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/stretchr/testify/require"
 
-	"github.com/grafana/loki/pkg/logqlmodel"
+	"github.com/grafana/loki/v3/pkg/logqlmodel"
 )
 
 func TestNoopPipeline(t *testing.T) {
@@ -52,6 +52,18 @@ func TestNoopPipeline(t *testing.T) {
 	})...)
 	require.Equal(t, []byte(""), l)
 	require.Equal(t, NewLabelsResult(expectedLabelsResults.String(), expectedLabelsResults.Hash(), lbs, expectedNonIndexedLabels, labels.EmptyLabels()), lbr)
+	require.Equal(t, expectedLabelsResults.Hash(), lbr.Hash())
+	require.Equal(t, expectedLabelsResults.String(), lbr.String())
+	require.Equal(t, true, matches)
+
+	// test structured metadata with disallowed label names
+	structuredMetadata = append(labels.FromStrings("y", "1", "z", "2"), labels.Label{Name: "zsomething-bad", Value: "foo"})
+	expectedStructuredMetadata := append(labels.FromStrings("y", "1", "z", "2"), labels.Label{Name: "zsomething_bad", Value: "foo"})
+	expectedLabelsResults = append(lbs, expectedStructuredMetadata...)
+
+	l, lbr, matches = pipeline.ForStream(lbs).Process(0, []byte(""), structuredMetadata...)
+	require.Equal(t, []byte(""), l)
+	require.Equal(t, NewLabelsResult(expectedLabelsResults.String(), expectedLabelsResults.Hash(), lbs, expectedStructuredMetadata, labels.EmptyLabels()), lbr)
 	require.Equal(t, expectedLabelsResults.Hash(), lbr.Hash())
 	require.Equal(t, expectedLabelsResults.String(), lbr.String())
 	require.Equal(t, true, matches)
@@ -170,6 +182,17 @@ func TestPipelineWithStructuredMetadata(t *testing.T) {
 	require.Equal(t, "", ls)
 	require.Equal(t, nil, lbr)
 	require.Equal(t, false, matches)
+
+	// test structured metadata with disallowed label names
+	withBadLabel := append(structuredMetadata, labels.Label{Name: "zsomething-bad", Value: "foo"})
+	expectedStructuredMetadata := append(structuredMetadata, labels.Label{Name: "zsomething_bad", Value: "foo"})
+	expectedLabelsResults = append(lbs, expectedStructuredMetadata...)
+
+	_, lbr, matches = p.ForStream(lbs).Process(0, []byte(""), withBadLabel...)
+	require.Equal(t, NewLabelsResult(expectedLabelsResults.String(), expectedLabelsResults.Hash(), lbs, expectedStructuredMetadata, labels.EmptyLabels()), lbr)
+	require.Equal(t, expectedLabelsResults.Hash(), lbr.Hash())
+	require.Equal(t, expectedLabelsResults.String(), lbr.String())
+	require.Equal(t, true, matches)
 
 	// Reset caches
 	p.baseBuilder.del = []string{"foo", "bar"}
@@ -563,6 +586,19 @@ func Benchmark_Pipeline(b *testing.B) {
 		b.ResetTimer()
 		for n := 0; n < b.N; n++ {
 			resLineString, resLbs, resMatches = sp.ProcessString(0, lineString)
+		}
+	})
+
+	b.Run("pipeline bytes no invalid structured metadata", func(b *testing.B) {
+		b.ResetTimer()
+		for n := 0; n < b.N; n++ {
+			resLine, resLbs, resMatches = sp.Process(0, line, labels.Label{Name: "valid_name", Value: "foo"})
+		}
+	})
+	b.Run("pipeline string with invalid structured metadata", func(b *testing.B) {
+		b.ResetTimer()
+		for n := 0; n < b.N; n++ {
+			resLine, resLbs, resMatches = sp.Process(0, line, labels.Label{Name: "invalid-name", Value: "foo"}, labels.Label{Name: "other-invalid-name", Value: "foo"})
 		}
 	})
 

@@ -15,12 +15,12 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 
-	"github.com/grafana/loki/pkg/storage/chunk"
-	"github.com/grafana/loki/pkg/storage/stores/index/seriesvolume"
-	shipperindex "github.com/grafana/loki/pkg/storage/stores/shipper/indexshipper/index"
-	"github.com/grafana/loki/pkg/storage/stores/shipper/indexshipper/tsdb/index"
-	"github.com/grafana/loki/pkg/util"
-	util_log "github.com/grafana/loki/pkg/util/log"
+	"github.com/grafana/loki/v3/pkg/storage/chunk"
+	"github.com/grafana/loki/v3/pkg/storage/stores/index/seriesvolume"
+	shipperindex "github.com/grafana/loki/v3/pkg/storage/stores/shipper/indexshipper/index"
+	"github.com/grafana/loki/v3/pkg/storage/stores/shipper/indexshipper/tsdb/index"
+	"github.com/grafana/loki/v3/pkg/util"
+	util_log "github.com/grafana/loki/v3/pkg/util/log"
 )
 
 var ErrAlreadyOnDesiredVersion = errors.New("tsdb file already on desired version")
@@ -218,7 +218,7 @@ func (i *TSDBIndex) GetChunkRefs(ctx context.Context, userID string, from, throu
 	}
 	res = res[:0]
 
-	if err := i.ForSeries(ctx, "", fpFilter, from, through, func(ls labels.Labels, fp model.Fingerprint, chks []index.ChunkMeta) (stop bool) {
+	if err := i.ForSeries(ctx, "", fpFilter, from, through, func(_ labels.Labels, fp model.Fingerprint, chks []index.ChunkMeta) (stop bool) {
 		for _, chk := range chks {
 
 			res = append(res, ChunkRef{
@@ -293,12 +293,18 @@ func (i *TSDBIndex) Stats(ctx context.Context, _ string, from, through model.Tim
 		// TODO(owen-d): use pool
 		var ls labels.Labels
 		var filterer chunk.Filterer
+		by := make(map[string]struct{})
 		if i.chunkFilter != nil {
 			filterer = i.chunkFilter.ForRequest(ctx)
+			if filterer != nil {
+				for _, k := range filterer.RequiredLabelNames() {
+					by[k] = struct{}{}
+				}
+			}
 		}
 
 		for p.Next() {
-			fp, stats, err := i.reader.ChunkStats(p.At(), int64(from), int64(through), &ls)
+			fp, stats, err := i.reader.ChunkStats(p.At(), int64(from), int64(through), &ls, by)
 			if err != nil {
 				return err
 			}
@@ -362,16 +368,29 @@ func (i *TSDBIndex) Volume(
 	seriesLabels := labels.Labels(make([]labels.Label, 0, len(labelsToMatch)))
 
 	aggregateBySeries := seriesvolume.AggregateBySeries(aggregateBy) || aggregateBy == ""
+	var by map[string]struct{}
+	var filterer chunk.Filterer
+	if i.chunkFilter != nil {
+		filterer = i.chunkFilter.ForRequest(ctx)
+	}
+	if !includeAll && (aggregateBySeries || len(targetLabels) > 0) {
+		by = make(map[string]struct{}, len(labelsToMatch))
+		for k := range labelsToMatch {
+			by[k] = struct{}{}
+		}
+
+		// If we are aggregating by series, we need to include all labels in the series required for filtering chunks.
+		if filterer != nil {
+			for _, k := range filterer.RequiredLabelNames() {
+				by[k] = struct{}{}
+			}
+		}
+	}
 
 	return i.forPostings(ctx, fpFilter, from, through, matchers, func(p index.Postings) error {
 		var ls labels.Labels
-		var filterer chunk.Filterer
-		if i.chunkFilter != nil {
-			filterer = i.chunkFilter.ForRequest(ctx)
-		}
-
 		for p.Next() {
-			fp, stats, err := i.reader.ChunkStats(p.At(), int64(from), int64(through), &ls)
+			fp, stats, err := i.reader.ChunkStats(p.At(), int64(from), int64(through), &ls, by)
 			if err != nil {
 				return fmt.Errorf("series volume: %w", err)
 			}

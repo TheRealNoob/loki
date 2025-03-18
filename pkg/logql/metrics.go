@@ -15,16 +15,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	promql_parser "github.com/prometheus/prometheus/promql/parser"
 
-	"github.com/grafana/loki/pkg/analytics"
-	"github.com/grafana/loki/pkg/logql/syntax"
-	"github.com/grafana/loki/pkg/logqlmodel"
-	logql_stats "github.com/grafana/loki/pkg/logqlmodel/stats"
-	"github.com/grafana/loki/pkg/querier/astmapper"
-	"github.com/grafana/loki/pkg/util"
-	"github.com/grafana/loki/pkg/util/constants"
-	"github.com/grafana/loki/pkg/util/httpreq"
-	util_log "github.com/grafana/loki/pkg/util/log"
-	"github.com/grafana/loki/pkg/util/spanlogger"
+	"github.com/grafana/loki/v3/pkg/analytics"
+	"github.com/grafana/loki/v3/pkg/logql/syntax"
+	"github.com/grafana/loki/v3/pkg/logqlmodel"
+	logql_stats "github.com/grafana/loki/v3/pkg/logqlmodel/stats"
+	"github.com/grafana/loki/v3/pkg/querier/astmapper"
+	"github.com/grafana/loki/v3/pkg/util"
+	"github.com/grafana/loki/v3/pkg/util/constants"
+	"github.com/grafana/loki/v3/pkg/util/httpreq"
+	util_log "github.com/grafana/loki/v3/pkg/util/log"
+	"github.com/grafana/loki/v3/pkg/util/spanlogger"
 )
 
 const (
@@ -101,10 +101,17 @@ func RecordRangeAndInstantQueryMetrics(
 		rt            = string(rangeType)
 		latencyType   = latencyTypeFast
 		returnedLines = 0
+		queryTags, _  = ctx.Value(httpreq.QueryTagsHTTPHeader).(string) // it's ok to be empty.
 	)
+
 	queryType, err := QueryType(p.GetExpression())
 	if err != nil {
 		level.Warn(logger).Log("msg", "error parsing query type", "err", err)
+	}
+
+	// datasample queries are executed with limited roundtripper
+	if queryType == QueryTypeFilter && strings.Contains(queryTags, "datasample") {
+		queryType = QueryTypeLimited
 	}
 
 	resultCache := stats.Caches.Result
@@ -123,7 +130,6 @@ func RecordRangeAndInstantQueryMetrics(
 		returnedLines = int(result.(logqlmodel.Streams).Lines())
 	}
 
-	queryTags, _ := ctx.Value(httpreq.QueryTagsHTTPHeader).(string) // it's ok to be empty.
 	var (
 		query       = p.QueryString()
 		hashedQuery = util.HashedQuery(query)
@@ -162,6 +168,7 @@ func RecordRangeAndInstantQueryMetrics(
 		"splits", stats.Summary.Splits,
 		"shards", stats.Summary.Shards,
 		"query_referenced_structured_metadata", stats.QueryReferencedStructuredMetadata(),
+		"pipeline_wrapper_filtered_lines", stats.PipelineWrapperFilteredLines(),
 		"chunk_refs_fetch_time", stats.ChunkRefsFetchTime(),
 		"cache_chunk_req", stats.Caches.Chunk.EntriesRequested,
 		"cache_chunk_hit", stats.Caches.Chunk.EntriesFound,
@@ -202,6 +209,7 @@ func RecordRangeAndInstantQueryMetrics(
 		"index_total_chunks", stats.Index.TotalChunks,
 		"index_post_bloom_filter_chunks", stats.Index.PostFilterChunks,
 		"index_bloom_filter_ratio", fmt.Sprintf("%.2f", bloomRatio),
+		"index_shard_resolver_duration", time.Duration(stats.Index.ShardsDuration),
 	}...)
 
 	logValues = append(logValues, tagsToKeyValues(queryTags)...)
@@ -375,7 +383,6 @@ func RecordStatsQueryMetrics(ctx context.Context, log log.Logger, start, end tim
 		"query", query,
 		"query_hash", util.HashedQuery(query),
 		"total_entries", stats.Summary.TotalEntriesReturned)
-
 	level.Info(logger).Log(logValues...)
 
 	execLatency.WithLabelValues(status, queryType, "").Observe(stats.Summary.ExecTime)
@@ -576,4 +583,46 @@ func extractShard(shards []string) *astmapper.ShardAnnotation {
 	}
 
 	return &shard
+}
+
+func RecordDetectedLabelsQueryMetrics(ctx context.Context, log log.Logger, start time.Time, end time.Time, query string, status string, stats logql_stats.Result) {
+	var (
+		logger      = fixLogger(ctx, log)
+		latencyType = latencyTypeFast
+		queryType   = QueryTypeVolume
+	)
+
+	// Tag throughput metric by latency type based on a threshold.
+	// Latency below the threshold is fast, above is slow.
+	if stats.Summary.ExecTime > slowQueryThresholdSecond {
+		latencyType = latencyTypeSlow
+	}
+
+	rangeType := "range"
+
+	level.Info(logger).Log(
+		"api", "detected_labels",
+		"latency", latencyType,
+		"query_type", queryType,
+		"query", query,
+		"query_hash", util.HashedQuery(query),
+		"start", start.Format(time.RFC3339Nano),
+		"end", end.Format(time.RFC3339Nano),
+		"start_delta", time.Since(start),
+		"end_delta", time.Since(end),
+		"range_type", rangeType,
+		"length", end.Sub(start),
+		"duration", time.Duration(int64(stats.Summary.ExecTime*float64(time.Second))),
+		"status", status,
+		"splits", stats.Summary.Splits,
+		"total_entries", stats.Summary.TotalEntriesReturned,
+		// cache is accumulated by middleware used by the frontend only; logs from the queriers will not show cache stats
+		//"cache_volume_results_req", stats.Caches.VolumeResult.EntriesRequested,
+		//"cache_volume_results_hit", stats.Caches.VolumeResult.EntriesFound,
+		//"cache_volume_results_stored", stats.Caches.VolumeResult.EntriesStored,
+		//"cache_volume_results_download_time", stats.Caches.VolumeResult.CacheDownloadTime(),
+		//"cache_volume_results_query_length_served", stats.Caches.VolumeResult.CacheQueryLengthServed(),
+	)
+
+	execLatency.WithLabelValues(status, queryType, "").Observe(stats.Summary.ExecTime)
 }

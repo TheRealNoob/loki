@@ -9,9 +9,9 @@ import (
 
 	"github.com/prometheus/prometheus/model/labels"
 
-	"github.com/grafana/loki/pkg/loghttp/push"
-	"github.com/grafana/loki/pkg/logproto"
-	"github.com/grafana/loki/pkg/validation"
+	"github.com/grafana/loki/v3/pkg/loghttp/push"
+	"github.com/grafana/loki/v3/pkg/logproto"
+	"github.com/grafana/loki/v3/pkg/validation"
 )
 
 const (
@@ -44,10 +44,14 @@ type validationContext struct {
 
 	incrementDuplicateTimestamps bool
 	discoverServiceName          []string
+	discoverLogLevels            bool
 
 	allowStructuredMetadata    bool
 	maxStructuredMetadataSize  int
 	maxStructuredMetadataCount int
+
+	blockIngestionUntil      time.Time
+	blockIngestionStatusCode int
 
 	userID string
 }
@@ -65,9 +69,12 @@ func (v Validator) getValidationContextForTime(now time.Time, userID string) val
 		maxLabelValueLength:          v.MaxLabelValueLength(userID),
 		incrementDuplicateTimestamps: v.IncrementDuplicateTimestamps(userID),
 		discoverServiceName:          v.DiscoverServiceName(userID),
+		discoverLogLevels:            v.DiscoverLogLevels(userID),
 		allowStructuredMetadata:      v.AllowStructuredMetadata(userID),
 		maxStructuredMetadataSize:    v.MaxStructuredMetadataSize(userID),
 		maxStructuredMetadataCount:   v.MaxStructuredMetadataCount(userID),
+		blockIngestionUntil:          v.BlockIngestionUntil(userID),
+		blockIngestionStatusCode:     v.BlockIngestionStatusCode(userID),
 	}
 }
 
@@ -155,7 +162,19 @@ func (v Validator) ValidateLabels(ctx validationContext, ls labels.Labels, strea
 		validation.DiscardedSamples.WithLabelValues(validation.MissingLabels, ctx.userID).Inc()
 		return fmt.Errorf(validation.MissingLabelsErrorMsg)
 	}
+
+	// Skip validation for aggregated metric streams, as we create those for internal use
+	if ls.Has(push.AggregatedMetricLabel) {
+		return nil
+	}
+
 	numLabelNames := len(ls)
+	// This is a special case that's often added by the Loki infrastructure. It may result in allowing one extra label
+	// if incoming requests already have a service_name
+	if ls.Has(push.LabelServiceName) {
+		numLabelNames--
+	}
+
 	if numLabelNames > ctx.maxLabelNamesPerSeries {
 		updateMetrics(validation.MaxLabelNamesPerSeries, ctx.userID, stream)
 		return fmt.Errorf(validation.MaxLabelNamesPerSeriesErrorMsg, stream.Labels, numLabelNames, ctx.maxLabelNamesPerSeries)
@@ -176,6 +195,15 @@ func (v Validator) ValidateLabels(ctx validationContext, ls labels.Labels, strea
 		lastLabelName = l.Name
 	}
 	return nil
+}
+
+// ShouldBlockIngestion returns whether ingestion should be blocked, until when and the status code.
+func (v Validator) ShouldBlockIngestion(ctx validationContext, now time.Time) (bool, time.Time, int) {
+	if ctx.blockIngestionUntil.IsZero() {
+		return false, time.Time{}, 0
+	}
+
+	return now.Before(ctx.blockIngestionUntil), ctx.blockIngestionUntil, ctx.blockIngestionStatusCode
 }
 
 func updateMetrics(reason, userID string, stream logproto.Stream) {

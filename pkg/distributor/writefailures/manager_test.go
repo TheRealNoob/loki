@@ -11,8 +11,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 
-	"github.com/grafana/loki/pkg/runtime"
-	"github.com/grafana/loki/pkg/util/flagext"
+	"github.com/grafana/loki/v3/pkg/runtime"
+	"github.com/grafana/loki/v3/pkg/util/flagext"
 )
 
 func TestWriteFailuresLogging(t *testing.T) {
@@ -58,7 +58,7 @@ func TestWriteFailuresRateLimiting(t *testing.T) {
 	logger := log.NewLogfmtLogger(buf)
 
 	provider := &providerMock{
-		tenantConfig: func(tenantID string) *runtime.Config {
+		tenantConfig: func(_ string) *runtime.Config {
 			return &runtime.Config{
 				LimitedLogPushErrors: true,
 			}
@@ -84,7 +84,7 @@ func TestWriteFailuresRateLimiting(t *testing.T) {
 			errorStr.WriteRune('z')
 		}
 
-		manager.Log("known-tenant", fmt.Errorf(errorStr.String()))
+		manager.Log("known-tenant", fmt.Errorf("%s", errorStr.String()))
 
 		content := buf.String()
 		require.Empty(t, content)
@@ -98,7 +98,7 @@ func TestWriteFailuresRateLimiting(t *testing.T) {
 			errorStr.WriteRune('z')
 		}
 
-		manager.Log("known-tenant", fmt.Errorf(errorStr.String()))
+		manager.Log("known-tenant", fmt.Errorf("%s", errorStr.String()))
 
 		content := buf.String()
 		require.NotEmpty(t, content)
@@ -117,10 +117,10 @@ func TestWriteFailuresRateLimiting(t *testing.T) {
 			errorStr2.WriteRune('y')
 		}
 
-		manager.Log("known-tenant", fmt.Errorf(errorStr1.String()))
-		manager.Log("known-tenant", fmt.Errorf(errorStr2.String())) // more than 1KB/s
+		manager.Log("known-tenant", fmt.Errorf("%s", errorStr1.String()))
+		manager.Log("known-tenant", fmt.Errorf("%s", errorStr2.String())) // more than 1KB/s
 		time.Sleep(time.Second)
-		manager.Log("known-tenant", fmt.Errorf(errorStr3.String()))
+		manager.Log("known-tenant", fmt.Errorf("%s", errorStr3.String()))
 
 		content := buf.String()
 		require.NotEmpty(t, content)

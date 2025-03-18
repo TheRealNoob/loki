@@ -38,7 +38,7 @@ import (
 	tsdb_errors "github.com/prometheus/prometheus/tsdb/errors"
 	"github.com/prometheus/prometheus/tsdb/fileutil"
 
-	"github.com/grafana/loki/pkg/util/encoding"
+	"github.com/grafana/loki/v3/pkg/util/encoding"
 )
 
 const (
@@ -176,7 +176,6 @@ func (m *Metadata) EnsureBounds(from, through int64) {
 	if m.Through == 0 || through > m.Through {
 		m.Through = through
 	}
-
 }
 
 // NewTOCFromByteSlice return parsed TOC from given index byte slice.
@@ -1646,7 +1645,6 @@ func readFingerprintOffsetsTable(bs ByteSlice, off uint64) (FingerprintOffsets, 
 	}
 
 	return res, d.Err()
-
 }
 
 // Close the reader and its underlying resources.
@@ -1834,7 +1832,7 @@ func (r *Reader) Series(id storage.SeriesRef, from int64, through int64, lbls *l
 	return fprint, nil
 }
 
-func (r *Reader) ChunkStats(id storage.SeriesRef, from, through int64, lbls *labels.Labels) (uint64, ChunkStats, error) {
+func (r *Reader) ChunkStats(id storage.SeriesRef, from, through int64, lbls *labels.Labels, by map[string]struct{}) (uint64, ChunkStats, error) {
 	offset := id
 	// In version 2+ series IDs are no longer exact references but series are 16-byte padded
 	// and the ID is the multiple of 16 of the actual position.
@@ -1846,7 +1844,7 @@ func (r *Reader) ChunkStats(id storage.SeriesRef, from, through int64, lbls *lab
 		return 0, ChunkStats{}, d.Err()
 	}
 
-	return r.dec.ChunkStats(r.version, d.Get(), id, from, through, lbls)
+	return r.dec.ChunkStats(r.version, d.Get(), id, from, through, lbls, by)
 }
 
 func (r *Reader) Postings(name string, fpFilter FingerprintFilter, values ...string) (Postings, error) {
@@ -2074,7 +2072,7 @@ func (dec *Decoder) Postings(b []byte) (int, Postings, error) {
 	if len(l) != 4*n {
 		return 0, nil, fmt.Errorf("unexpected postings length, should be %d bytes for %d postings, got %d bytes", 4*n, n, len(l))
 	}
-	return n, newBigEndianPostings(l), nil
+	return n, NewBigEndianPostings(l), nil
 }
 
 // LabelNamesOffsetsFor decodes the offsets of the name symbols for a given series.
@@ -2218,7 +2216,7 @@ func (dec *Decoder) prepSeries(b []byte, lbls *labels.Labels, chks *[]ChunkMeta)
 		if d.Err() != nil {
 			return nil, 0, errors.Wrap(d.Err(), "read series label offsets")
 		}
-
+		// todo(cyriltovena): we could cache this by user requests spanning multiple prepSeries calls.
 		ln, err := dec.LookupSymbol(lno)
 		if err != nil {
 			return nil, 0, errors.Wrap(err, "lookup label name")
@@ -2233,8 +2231,50 @@ func (dec *Decoder) prepSeries(b []byte, lbls *labels.Labels, chks *[]ChunkMeta)
 	return &d, fprint, nil
 }
 
-func (dec *Decoder) ChunkStats(version int, b []byte, seriesRef storage.SeriesRef, from, through int64, lbls *labels.Labels) (uint64, ChunkStats, error) {
-	d, fp, err := dec.prepSeries(b, lbls, nil)
+// prepSeriesBy returns series labels and chunks for a series and only returning selected `by` label names.
+// If `by` is empty, it returns all labels for the series.
+func (dec *Decoder) prepSeriesBy(b []byte, lbls *labels.Labels, chks *[]ChunkMeta, by map[string]struct{}) (*encoding.Decbuf, uint64, error) {
+	if by == nil {
+		return dec.prepSeries(b, lbls, chks)
+	}
+	*lbls = (*lbls)[:0]
+	if chks != nil {
+		*chks = (*chks)[:0]
+	}
+
+	d := encoding.DecWrap(tsdb_enc.Decbuf{B: b})
+
+	fprint := d.Be64()
+	k := d.Uvarint()
+
+	for i := 0; i < k; i++ {
+		lno := uint32(d.Uvarint())
+		lvo := uint32(d.Uvarint())
+
+		if d.Err() != nil {
+			return nil, 0, errors.Wrap(d.Err(), "read series label offsets")
+		}
+		// todo(cyriltovena): we could cache this by user requests spanning multiple prepSeries calls.
+		ln, err := dec.LookupSymbol(lno)
+		if err != nil {
+			return nil, 0, errors.Wrap(err, "lookup label name")
+		}
+		if _, ok := by[ln]; !ok {
+			continue
+		}
+
+		lv, err := dec.LookupSymbol(lvo)
+		if err != nil {
+			return nil, 0, errors.Wrap(err, "lookup label value")
+		}
+
+		*lbls = append(*lbls, labels.Label{Name: ln, Value: lv})
+	}
+	return &d, fprint, nil
+}
+
+func (dec *Decoder) ChunkStats(version int, b []byte, seriesRef storage.SeriesRef, from, through int64, lbls *labels.Labels, by map[string]struct{}) (uint64, ChunkStats, error) {
+	d, fp, err := dec.prepSeriesBy(b, lbls, nil, by)
 	if err != nil {
 		return 0, ChunkStats{}, err
 	}
@@ -2335,7 +2375,6 @@ func (dec *Decoder) readChunkStatsV3(d *encoding.Decbuf, from, through int64) (r
 	}
 
 	return res, d.Err()
-
 }
 
 func (dec *Decoder) accumulateChunkStats(d *encoding.Decbuf, nChunks int, from, through int64) (res ChunkStats, err error) {
@@ -2372,16 +2411,13 @@ func (dec *Decoder) readChunkStatsPriorV3(d *encoding.Decbuf, seriesRef storage.
 		} else if chk.MinTime >= through {
 			break
 		}
-
 	}
 
 	return res, nil
-
 }
 
 // Series decodes a series entry from the given byte slice into lset and chks.
 func (dec *Decoder) Series(version int, b []byte, seriesRef storage.SeriesRef, from int64, through int64, lbls *labels.Labels, chks *[]ChunkMeta) (uint64, error) {
-
 	d, fprint, err := dec.prepSeries(b, lbls, chks)
 	if err != nil {
 		return 0, err
@@ -2392,7 +2428,6 @@ func (dec *Decoder) Series(version int, b []byte, seriesRef storage.SeriesRef, f
 		return 0, errors.Wrapf(err, "series %s", lbls.String())
 	}
 	return fprint, nil
-
 }
 
 func (dec *Decoder) readChunks(version int, d *encoding.Decbuf, seriesRef storage.SeriesRef, from int64, through int64, chks *[]ChunkMeta) error {

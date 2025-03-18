@@ -13,12 +13,27 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 
-	"github.com/grafana/loki/pkg/logproto"
 	"github.com/grafana/loki/pkg/push"
+
+	"github.com/grafana/loki/v3/pkg/logproto"
 )
 
 func TestOTLPToLokiPushRequest(t *testing.T) {
 	now := time.Unix(0, time.Now().UnixNano())
+	defaultServiceDetection := []string{
+		"service",
+		"app",
+		"application",
+		"name",
+		"app_kubernetes_io_name",
+		"container",
+		"container_name",
+		"k8s_container_name",
+		"component",
+		"workload",
+		"job",
+		"k8s_job_name",
+	}
 
 	for _, tc := range []struct {
 		name                string
@@ -345,7 +360,8 @@ func TestOTLPToLokiPushRequest(t *testing.T) {
 						{
 							Action:     IndexLabel,
 							Attributes: []string{"pod.name"},
-						}, {
+						},
+						{
 							Action: IndexLabel,
 							Regex:  relabel.MustNewRegexp("service.*"),
 						},
@@ -492,7 +508,7 @@ func TestOTLPToLokiPushRequest(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			stats := newPushStats()
 			tracker := NewMockTracker()
-			pushReq := otlpToLokiPushRequest(context.Background(), tc.generateLogs(), "foo", fakeRetention{}, tc.otlpConfig, tracker, stats)
+			pushReq := otlpToLokiPushRequest(context.Background(), tc.generateLogs(), "foo", fakeRetention{}, tc.otlpConfig, defaultServiceDetection, tracker, stats)
 			require.Equal(t, tc.expectedPushRequest, *pushReq)
 			require.Equal(t, tc.expectedStats, *stats)
 
@@ -591,7 +607,6 @@ func TestOTLPLogToPushEntry(t *testing.T) {
 			require.Equal(t, tc.expectedResp, otlpLogToPushEntry(tc.buildLogRecord(), DefaultOTLPConfig(defaultGlobalOTLPConfig)))
 		})
 	}
-
 }
 
 func TestAttributesToLabels(t *testing.T) {

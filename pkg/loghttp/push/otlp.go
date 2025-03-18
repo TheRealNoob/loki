@@ -18,15 +18,18 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 
-	"github.com/grafana/loki/pkg/logproto"
 	"github.com/grafana/loki/pkg/push"
-	loki_util "github.com/grafana/loki/pkg/util"
+
+	"github.com/grafana/loki/v3/pkg/logproto"
+	loki_util "github.com/grafana/loki/v3/pkg/util"
 )
 
 const (
 	pbContentType       = "application/x-protobuf"
 	gzipContentEncoding = "gzip"
 	attrServiceName     = "service.name"
+
+	OTLPSeverityNumber = "severity_number"
 )
 
 func newPushStats() *Stats {
@@ -44,7 +47,7 @@ func ParseOTLPRequest(userID string, r *http.Request, tenantsRetention TenantsRe
 		return nil, nil, err
 	}
 
-	req := otlpToLokiPushRequest(r.Context(), otlpLogs, userID, tenantsRetention, limits.OTLPConfig(userID), tracker, stats)
+	req := otlpToLokiPushRequest(r.Context(), otlpLogs, userID, tenantsRetention, limits.OTLPConfig(userID), limits.DiscoverServiceName(userID), tracker, stats)
 	return req, stats, nil
 }
 
@@ -95,7 +98,7 @@ func extractLogs(r *http.Request, pushStats *Stats) (plog.Logs, error) {
 	return req.Logs(), nil
 }
 
-func otlpToLokiPushRequest(ctx context.Context, ld plog.Logs, userID string, tenantsRetention TenantsRetention, otlpConfig OTLPConfig, tracker UsageTracker, stats *Stats) *logproto.PushRequest {
+func otlpToLokiPushRequest(ctx context.Context, ld plog.Logs, userID string, tenantsRetention TenantsRetention, otlpConfig OTLPConfig, discoverServiceName []string, tracker UsageTracker, stats *Stats) *logproto.PushRequest {
 	if ld.LogRecordCount() == 0 {
 		return &logproto.PushRequest{}
 	}
@@ -108,12 +111,14 @@ func otlpToLokiPushRequest(ctx context.Context, ld plog.Logs, userID string, ten
 		res := rls.At(i).Resource()
 		resAttrs := res.Attributes()
 
-		if v, ok := resAttrs.Get(attrServiceName); !ok || v.AsString() == "" {
-			resAttrs.PutStr(attrServiceName, "unknown_service")
-		}
 		resourceAttributesAsStructuredMetadata := make(push.LabelsAdapter, 0, resAttrs.Len())
 		streamLabels := make(model.LabelSet, 30) // we have a default labels limit of 30 so just initialize the map of same size
 
+		shouldDiscoverServiceName := len(discoverServiceName) > 0 && !stats.IsAggregatedMetric
+		hasServiceName := false
+		if v, ok := resAttrs.Get(attrServiceName); ok && v.AsString() != "" {
+			hasServiceName = true
+		}
 		resAttrs.Range(func(k string, v pcommon.Value) bool {
 			action := otlpConfig.ActionForResourceAttribute(k)
 			if action == Drop {
@@ -124,6 +129,16 @@ func otlpToLokiPushRequest(ctx context.Context, ld plog.Logs, userID string, ten
 			if action == IndexLabel {
 				for _, lbl := range attributeAsLabels {
 					streamLabels[model.LabelName(lbl.Name)] = model.LabelValue(lbl.Value)
+
+					if !hasServiceName && shouldDiscoverServiceName {
+						for _, labelName := range discoverServiceName {
+							if lbl.Name == labelName {
+								streamLabels[model.LabelName(LabelServiceName)] = model.LabelValue(lbl.Value)
+								hasServiceName = true
+								break
+							}
+						}
+					}
 				}
 			} else if action == StructuredMetadata {
 				resourceAttributesAsStructuredMetadata = append(resourceAttributesAsStructuredMetadata, attributeAsLabels...)
@@ -131,6 +146,10 @@ func otlpToLokiPushRequest(ctx context.Context, ld plog.Logs, userID string, ten
 
 			return true
 		})
+
+		if !hasServiceName && shouldDiscoverServiceName {
+			streamLabels[model.LabelName(LabelServiceName)] = model.LabelValue(ServiceUnknown)
+		}
 
 		if err := streamLabels.Validate(); err != nil {
 			stats.Errs = append(stats.Errs, fmt.Errorf("invalid labels: %w", err))
@@ -287,7 +306,7 @@ func otlpLogToPushEntry(log plog.LogRecord, otlpConfig OTLPConfig) push.Entry {
 
 	if severityNum := log.SeverityNumber(); severityNum != plog.SeverityNumberUnspecified {
 		structuredMetadata = append(structuredMetadata, push.LabelAdapter{
-			Name:  "severity_number",
+			Name:  OTLPSeverityNumber,
 			Value: fmt.Sprintf("%d", severityNum),
 		})
 	}

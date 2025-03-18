@@ -24,11 +24,11 @@ import (
 	"github.com/prometheus/prometheus/rules"
 	"github.com/prometheus/prometheus/template"
 
-	"github.com/grafana/loki/pkg/logql/syntax"
-	ruler "github.com/grafana/loki/pkg/ruler/base"
-	"github.com/grafana/loki/pkg/ruler/rulespb"
-	rulerutil "github.com/grafana/loki/pkg/ruler/util"
-	"github.com/grafana/loki/pkg/util"
+	"github.com/grafana/loki/v3/pkg/logql/syntax"
+	ruler "github.com/grafana/loki/v3/pkg/ruler/base"
+	"github.com/grafana/loki/v3/pkg/ruler/rulespb"
+	rulerutil "github.com/grafana/loki/v3/pkg/ruler/util"
+	"github.com/grafana/loki/v3/pkg/util"
 )
 
 // RulesLimits is the one function we need from limits.Overrides, and
@@ -251,9 +251,9 @@ func validateRuleNode(r *rulefmt.RuleNode, groupName string) error {
 		return errors.Errorf("field 'expr' must be set in rule")
 	} else if _, err := syntax.ParseExpr(r.Expr.Value); err != nil {
 		if r.Record.Value != "" {
-			return errors.Wrapf(err, fmt.Sprintf("could not parse expression for record '%s' in group '%s'", r.Record.Value, groupName))
+			return errors.Wrapf(err, "could not parse expression for record '%s' in group '%s'", r.Record.Value, groupName)
 		}
-		return errors.Wrapf(err, fmt.Sprintf("could not parse expression for alert '%s' in group '%s'", r.Alert.Value, groupName))
+		return errors.Wrapf(err, "could not parse expression for alert '%s' in group '%s'", r.Alert.Value, groupName)
 	}
 
 	if r.Record.Value != "" {
@@ -300,7 +300,7 @@ func testTemplateParsing(rl *rulefmt.RuleNode) (errs []error) {
 	}
 
 	// Trying to parse templates.
-	tmplData := template.AlertTemplateData(map[string]string{}, map[string]string{}, "", 0)
+	tmplData := template.AlertTemplateData(map[string]string{}, map[string]string{}, "", promql.Sample{})
 	defs := []string{
 		"{{$labels := .Labels}}",
 		"{{$externalLabels := .ExternalLabels}}",
