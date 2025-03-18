@@ -167,6 +167,9 @@ Entries should include a reference to the pull request that introduced the chang
 ## 6.6.5
 
 - [BUGFIX] Fix querier address in SingleBinary mode
+## 6.7.0
+
+- [ENHANCEMENT] Allow extraObjects as dictionary or list
 
 ## 6.6.4
 
