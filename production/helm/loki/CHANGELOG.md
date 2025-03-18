@@ -17,9 +17,6 @@ Entries should include a reference to the pull request that introduced the chang
 
 - [ENHANCEMENT] Expand `extraObjects` to have more flexibility in templating
 
-# extraObjects can be of type map or slice.  If slice, keys are ignored and only values are used.
-# items contained within extraObjects can be defined as dict or string and are passed through tpl.
-
 ## 6.28.0
 
 - [CHANGE] Add extraContainers parameter for the backend pod
