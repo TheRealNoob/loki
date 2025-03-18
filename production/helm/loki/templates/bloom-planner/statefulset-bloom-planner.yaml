@@ -1,6 +1,5 @@
 {{- $isDistributed := eq (include "loki.deployment.isDistributed" .) "true" -}}
-{{- if $isDistributed }}
-{{- if (gt (int .Values.bloomPlanner.replicas) 0) -}}
+{{- if (and $isDistributed (gt (int .Values.bloomPlanner.replicas) 0)) -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -20,7 +19,7 @@ spec:
       partition: 0
   serviceName: {{ include "loki.bloomPlannerFullname" . }}-headless
   revisionHistoryLimit: {{ .Values.loki.revisionHistoryLimit }}
-  {{- if and (semverCompare ">= 1.23-0" .Capabilities.KubeVersion.Version) (.Values.bloomPlanner.persistence.enableStatefulSetAutoDeletePVC)  }}
+  {{- if and (semverCompare ">= 1.23-0" (include "loki.kubeVersion" .)) (.Values.bloomPlanner.persistence.enableStatefulSetAutoDeletePVC)  }}
   persistentVolumeClaimRetentionPolicy:
     whenDeleted: {{ .Values.bloomPlanner.persistence.whenDeleted }}
     whenScaled: {{ .Values.bloomPlanner.persistence.whenScaled }}
@@ -39,12 +38,9 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       labels:
-        {{- include "loki.bloomPlannerSelectorLabels" . | nindent 8 }}
+        {{- include "loki.bloomPlannerLabels" . | nindent 8 }}
         app.kubernetes.io/part-of: memberlist
-        {{- with .Values.loki.podLabels }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
-        {{- with .Values.bloomPlanner.podLabels }}
+        {{- with merge .Values.loki.podLabels .Values.bloomPlanner.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
@@ -162,7 +158,9 @@ spec:
   {{- if .Values.bloomPlanner.persistence.enabled }}
   volumeClaimTemplates:
   {{- range .Values.bloomPlanner.persistence.claims }}
-    - metadata:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
         name: {{ .name }}
         {{- with .annotations }}
         annotations:
@@ -179,5 +177,4 @@ spec:
             storage: {{ .size | quote }}
   {{- end }}
   {{- end }}
-{{- end -}}
 {{- end -}}

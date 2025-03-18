@@ -1,4 +1,4 @@
-FROM golang:1.22.6-bullseye AS builder
+FROM golang:1.23-bullseye AS builder
 
 COPY . /src
 
@@ -14,7 +14,7 @@ RUN go build \
     -o clients/cmd/fluent-bit/out_grafana_loki.so \
     /src/clients/cmd/fluent-bit
 
-FROM fluent/fluent-bit:1.9.10@sha256:b33d4bf7f7b870777c1f596bc33d6d347167d460bc8cc6aa50fddcbedf7bede5
+FROM fluent/fluent-bit:3.2.9@sha256:620d8541bbc32c20b3193881357377cfbec0ba1d7a68e74e53736fd7d10b8cc8
 
 COPY --from=builder /src/clients/cmd/fluent-bit/out_grafana_loki.so /fluent-bit/bin
 COPY clients/cmd/fluent-bit/fluent-bit.conf /fluent-bit/etc/fluent-bit.conf

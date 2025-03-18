@@ -7,17 +7,11 @@ import (
 	"math"
 	"time"
 
-	"github.com/grafana/loki/v3/pkg/logql/log"
-	"github.com/grafana/loki/v3/pkg/logql/syntax"
-
 	"github.com/grafana/loki/pkg/push"
-
-	"github.com/grafana/loki/v3/pkg/loghttp"
 
 	"github.com/grafana/dskit/grpcclient"
 	"github.com/grafana/dskit/ring"
 	ring_client "github.com/grafana/dskit/ring/client"
-	logql_log "github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
@@ -25,12 +19,17 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 	grpc_metadata "google.golang.org/grpc/metadata"
 
+	"github.com/grafana/loki/v3/pkg/compactor/deletion"
 	"github.com/grafana/loki/v3/pkg/distributor/clientpool"
 	"github.com/grafana/loki/v3/pkg/ingester/client"
 	"github.com/grafana/loki/v3/pkg/iter"
+	"github.com/grafana/loki/v3/pkg/loghttp"
 	"github.com/grafana/loki/v3/pkg/logproto"
 	"github.com/grafana/loki/v3/pkg/logql"
+	"github.com/grafana/loki/v3/pkg/logql/log"
+	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/grafana/loki/v3/pkg/logqlmodel"
+	"github.com/grafana/loki/v3/pkg/querier/pattern"
 	"github.com/grafana/loki/v3/pkg/storage/chunk"
 	"github.com/grafana/loki/v3/pkg/storage/chunk/fetcher"
 	"github.com/grafana/loki/v3/pkg/storage/config"
@@ -141,9 +140,22 @@ func (c *querierClientMock) Close() error {
 	return nil
 }
 
+type mockIngesterClientFactory struct {
+	requestedClients map[string]int
+}
+
 // newIngesterClientMockFactory creates a factory function always returning
 // the input querierClientMock
-func newIngesterClientMockFactory(c *querierClientMock) ring_client.PoolFactory {
+func (f mockIngesterClientFactory) newIngesterClientMockFactory(c *querierClientMock) ring_client.PoolFactory {
+	return ring_client.PoolAddrFunc(func(addr string) (ring_client.PoolClient, error) {
+		f.requestedClients[addr]++
+		return c, nil
+	})
+}
+
+// newIngesterClientMockFactory creates a factory function always returning
+// the input querierClientMock
+func newIngesterClientMockFactory(c ring_client.PoolClient) ring_client.PoolFactory {
 	return ring_client.PoolAddrFunc(func(_ string) (ring_client.PoolClient, error) {
 		return c, nil
 	})
@@ -248,62 +260,6 @@ func (c *querySampleClientMock) RecvMsg(_ interface{}) error {
 
 func (c *querySampleClientMock) Context() context.Context {
 	return context.Background()
-}
-
-// tailClientMock is mockable version of Querier_TailClient
-type tailClientMock struct {
-	util.ExtendedMock
-	logproto.Querier_TailClient
-	recvTrigger chan time.Time
-}
-
-func newTailClientMock() *tailClientMock {
-	return &tailClientMock{
-		recvTrigger: make(chan time.Time, 10),
-	}
-}
-
-func (c *tailClientMock) Recv() (*logproto.TailResponse, error) {
-	args := c.Called()
-	return args.Get(0).(*logproto.TailResponse), args.Error(1)
-}
-
-func (c *tailClientMock) Header() (grpc_metadata.MD, error) {
-	return nil, nil
-}
-
-func (c *tailClientMock) Trailer() grpc_metadata.MD {
-	return nil
-}
-
-func (c *tailClientMock) CloseSend() error {
-	return nil
-}
-
-func (c *tailClientMock) Context() context.Context {
-	return context.Background()
-}
-
-func (c *tailClientMock) SendMsg(_ interface{}) error {
-	return nil
-}
-
-func (c *tailClientMock) RecvMsg(_ interface{}) error {
-	return nil
-}
-
-func (c *tailClientMock) mockRecvWithTrigger(response *logproto.TailResponse) *tailClientMock {
-	c.On("Recv").WaitUntil(c.recvTrigger).Return(response, nil)
-
-	return c
-}
-
-// triggerRecv triggers the Recv() mock to return from the next invocation
-// or from the current invocation if was already called and waiting for the
-// trigger. This method works if and only if the Recv() has been mocked with
-// mockRecvWithTrigger().
-func (c *tailClientMock) triggerRecv() {
-	c.recvTrigger <- time.Now()
 }
 
 // storeMock is a mockable version of Loki's storage, used in querier unit tests
@@ -419,6 +375,54 @@ func newReadRingMock(ingesters []ring.InstanceDesc, maxErrors int) *readRingMock
 	}
 }
 
+func (r *readRingMock) GetInstance(addr string) (ring.InstanceDesc, error) {
+	for _, ing := range r.replicationSet.Instances {
+		if ing.Addr == addr {
+			return ing, nil
+		}
+	}
+	return ring.InstanceDesc{}, errors.New("instance not found")
+}
+
+// partitionRingMock is a mocked version of a ReadRing, used in querier unit tests
+// to control the pool of ingesters available
+type partitionRingMock struct {
+	ring *ring.PartitionRing
+}
+
+func (p partitionRingMock) PartitionRing() *ring.PartitionRing {
+	return p.ring
+}
+
+func newPartitionInstanceRingMock(ingesterRing ring.InstanceRingReader, ingesters []ring.InstanceDesc, numPartitions int, ingestersPerPartition int) *ring.PartitionInstanceRing {
+	partitions := make(map[int32]ring.PartitionDesc)
+	owners := make(map[string]ring.OwnerDesc)
+	for i := 0; i < numPartitions; i++ {
+		partitions[int32(i)] = ring.PartitionDesc{
+			Id:     int32(i),
+			State:  ring.PartitionActive,
+			Tokens: []uint32{uint32(i)},
+		}
+
+		for j := 0; j < ingestersPerPartition; j++ {
+			ingesterIdx := i*ingestersPerPartition + j
+			if ingesterIdx < len(ingesters) {
+				owners[ingesters[ingesterIdx].Id] = ring.OwnerDesc{
+					OwnedPartition: int32(i),
+					State:          ring.OwnerActive,
+				}
+			}
+		}
+	}
+	partitionRing := partitionRingMock{
+		ring: ring.NewPartitionRing(ring.PartitionRingDesc{
+			Partitions: partitions,
+			Owners:     owners,
+		}),
+	}
+	return ring.NewPartitionInstanceRing(partitionRing, ingesterRing, time.Hour)
+}
+
 func (r *readRingMock) Describe(_ chan<- *prometheus.Desc) {
 }
 
@@ -511,6 +515,10 @@ func (r *readRingMock) WritableInstancesWithTokensInZoneCount(_ string) int {
 	return len(r.replicationSet.Instances)
 }
 
+func (r *readRingMock) GetWithOptions(_ uint32, _ ring.Operation, _ ...ring.Option) (ring.ReplicationSet, error) {
+	return r.replicationSet, nil
+}
+
 func mockReadRingWithOneActiveIngester() *readRingMock {
 	return newReadRingMock([]ring.InstanceDesc{
 		{Addr: "test", Timestamp: time.Now().UnixNano(), State: ring.ACTIVE, Tokens: []uint32{1, 2, 3}},
@@ -518,11 +526,17 @@ func mockReadRingWithOneActiveIngester() *readRingMock {
 }
 
 func mockInstanceDesc(addr string, state ring.InstanceState) ring.InstanceDesc {
+	return mockInstanceDescWithZone(addr, state, "")
+}
+
+func mockInstanceDescWithZone(addr string, state ring.InstanceState, zone string) ring.InstanceDesc {
 	return ring.InstanceDesc{
+		Id:        addr,
 		Addr:      addr,
 		Timestamp: time.Now().UnixNano(),
 		State:     state,
 		Tokens:    []uint32{1, 2, 3},
+		Zone:      zone,
 	}
 }
 
@@ -587,8 +601,8 @@ func mockLogfmtStreamWithLabels(_ int, quantity int, lbls string) logproto.Strea
 		streamLabels = labels.EmptyLabels()
 	}
 
-	lblBuilder := logql_log.NewBaseLabelsBuilder().ForLabels(streamLabels, streamLabels.Hash())
-	logFmtParser := logql_log.NewLogfmtParser(false, false)
+	lblBuilder := log.NewBaseLabelsBuilder().ForLabels(streamLabels, streamLabels.Hash())
+	logFmtParser := log.NewLogfmtParser(false, false)
 
 	// used for detected fields queries which are always BACKWARD
 	for i := quantity; i > 0; i-- {
@@ -647,8 +661,8 @@ func mockLogfmtStreamWithLabelsAndStructuredMetadata(
 		streamLabels = labels.EmptyLabels()
 	}
 
-	lblBuilder := logql_log.NewBaseLabelsBuilder().ForLabels(streamLabels, streamLabels.Hash())
-	logFmtParser := logql_log.NewLogfmtParser(false, false)
+	lblBuilder := log.NewBaseLabelsBuilder().ForLabels(streamLabels, streamLabels.Hash())
+	logFmtParser := log.NewLogfmtParser(false, false)
 
 	for i := quantity; i > 0; i-- {
 		line := fmt.Sprintf(`message="line %d" count=%d fake=true`, i, i)
@@ -695,10 +709,6 @@ func (q *querierMock) Label(ctx context.Context, req *logproto.LabelRequest) (*l
 func (q *querierMock) Series(ctx context.Context, req *logproto.SeriesRequest) (*logproto.SeriesResponse, error) {
 	args := q.Called(ctx, req)
 	return args.Get(0).(func() *logproto.SeriesResponse)(), args.Error(1)
-}
-
-func (q *querierMock) Tail(_ context.Context, _ *logproto.TailRequest, _ bool) (*Tailer, error) {
-	return nil, errors.New("querierMock.Tail() has not been mocked")
 }
 
 func (q *querierMock) IndexStats(_ context.Context, _ *loghttp.RangeQuery) (*stats.Stats, error) {
@@ -765,7 +775,7 @@ func (q *querierMock) DetectedLabels(ctx context.Context, req *logproto.Detected
 	return resp.(*logproto.DetectedLabelsResponse), err
 }
 
-func (q *querierMock) WithPatternQuerier(_ PatterQuerier) {}
+func (q *querierMock) WithPatternQuerier(_ pattern.PatterQuerier) {}
 
 type engineMock struct {
 	util.ExtendedMock
@@ -801,4 +811,14 @@ func (tl mockTenantLimits) TenantLimits(userID string) *validation.Limits {
 
 func (tl mockTenantLimits) AllByUserID() map[string]*validation.Limits {
 	return tl
+}
+
+type mockDeleteGettter struct {
+	user    string
+	results []deletion.DeleteRequest
+}
+
+func (d *mockDeleteGettter) GetAllDeleteRequestsForUser(_ context.Context, userID string) ([]deletion.DeleteRequest, error) {
+	d.user = userID
+	return d.results, nil
 }

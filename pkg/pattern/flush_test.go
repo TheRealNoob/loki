@@ -41,7 +41,7 @@ func TestSweepInstance(t *testing.T) {
 		ring: fakeRing,
 	}
 
-	ing, err := New(defaultIngesterTestConfig(t), ringClient, "foo", nil, log.NewNopLogger())
+	ing, err := New(defaultIngesterTestConfig(t), &fakeLimits{}, ringClient, "foo", nil, log.NewNopLogger())
 	require.NoError(t, err)
 	defer services.StopAndAwaitTerminated(context.Background(), ing) //nolint:errcheck
 	err = services.StartAndAwaitRunning(context.Background(), ing)
@@ -258,6 +258,11 @@ func (f *fakeRing) CleanupShuffleShardCache(identifier string) {
 func (f *fakeRing) GetTokenRangesForInstance(identifier string) (ring.TokenRanges, error) {
 	args := f.Called(identifier)
 	return args.Get(0).(ring.TokenRanges), args.Error(1)
+}
+
+func (f *fakeRing) GetWithOptions(key uint32, op ring.Operation, opts ...ring.Option) (ring.ReplicationSet, error) {
+	args := f.Called(key, op, opts)
+	return args.Get(0).(ring.ReplicationSet), args.Error(1)
 }
 
 type mockPoolClient struct {

@@ -39,10 +39,11 @@ type ListBucketsResult struct {
 
 // ListObjectsArgs defines the optional arguments for ListObjects api.
 type ListObjectsArgs struct {
-	Delimiter string `json:"delimiter"`
-	Marker    string `json:"marker"`
-	MaxKeys   int    `json:"maxKeys"`
-	Prefix    string `json:"prefix"`
+	Delimiter       string `json:"delimiter"`
+	Marker          string `json:"marker"`
+	MaxKeys         int    `json:"maxKeys"`
+	Prefix          string `json:"prefix"`
+	VersionIdMarker string `json:"versionIdMarker,omitempty"`
 }
 
 type ObjectSummaryType struct {
@@ -52,6 +53,8 @@ type ObjectSummaryType struct {
 	Size         int       `json:"size"`
 	StorageClass string    `json:"storageClass"`
 	Owner        OwnerType `json:"owner"`
+	VersionId    string    `json:"versionId,omitempty"`
+	IsLatest     int       `json:"isLatest,omitempty"`
 }
 
 type PrefixType struct {
@@ -59,20 +62,24 @@ type PrefixType struct {
 }
 
 type PutBucketArgs struct {
-	TagList string
+	TagList         string `json:"-"`
+	EnableMultiAz   bool   `json:"enableMultiAz"`
+	LccLocation     string `json:"lccLocation,omitempty"`
+	EnableDedicated bool   `json:"enableDedicated,omitempty"`
 }
 
 // ListObjectsResult defines the result structure of ListObjects api.
 type ListObjectsResult struct {
-	Name           string              `json:"name"`
-	Prefix         string              `json:"prefix"`
-	Delimiter      string              `json:"delimiter"`
-	Marker         string              `json:"marker"`
-	NextMarker     string              `json:"nextMarker,omitempty"`
-	MaxKeys        int                 `json:"maxKeys"`
-	IsTruncated    bool                `json:"isTruncated"`
-	Contents       []ObjectSummaryType `json:"contents"`
-	CommonPrefixes []PrefixType        `json:"commonPrefixes"`
+	Name                string              `json:"name"`
+	Prefix              string              `json:"prefix"`
+	Delimiter           string              `json:"delimiter"`
+	Marker              string              `json:"marker"`
+	NextMarker          string              `json:"nextMarker,omitempty"`
+	NextVersionidMarker string              `json:"nextVersionidMarker,omitempty"`
+	MaxKeys             int                 `json:"maxKeys"`
+	IsTruncated         bool                `json:"isTruncated"`
+	Contents            []ObjectSummaryType `json:"contents"`
+	CommonPrefixes      []PrefixType        `json:"commonPrefixes"`
 }
 
 type LocationType struct {
@@ -97,6 +104,7 @@ type AclRefererType struct {
 type AclCondType struct {
 	IpAddress []string       `json:"ipAddress"`
 	Referer   AclRefererType `json:"referer"`
+	VpcId     []string       `json:"vpcId"`
 }
 
 // GrantType defines the grant struct in ACL setting
@@ -280,10 +288,14 @@ type CopyObjectArgs struct {
 	IfUnmodifiedSince string
 	TrafficLimit      int64
 	CannedAcl         string
+	TaggingDirective  string
+	ObjectTagging     string
 }
 
 type MultiCopyObjectArgs struct {
-	StorageClass string
+	StorageClass     string
+	ObjectTagging    string
+	TaggingDirective string
 }
 
 type CallbackResult struct {
@@ -298,6 +310,7 @@ type PutObjectResult struct {
 type CopyObjectResult struct {
 	LastModified string `json:"lastModified"`
 	ETag         string `json:"eTag"`
+	VersionId    string `json:"versionId"`
 }
 
 type ObjectMeta struct {
@@ -319,6 +332,7 @@ type ObjectMeta struct {
 	ObjectType         string
 	BceRestore         string
 	BceObjectType      string
+	VersionId          string
 }
 
 // GetObjectResult defines the result data of the get object api.
@@ -392,8 +406,9 @@ type EndMessage struct {
 
 // FetchObjectArgs defines the optional arguments structure for the fetch object api.
 type FetchObjectArgs struct {
-	FetchMode    string
-	StorageClass string
+	FetchMode            string
+	StorageClass         string
+	FetchCallBackAddress string
 }
 
 // FetchObjectResult defines the result json structure for the fetch object api.
@@ -455,6 +470,8 @@ type InitiateMultipartUploadArgs struct {
 	ContentDisposition string
 	Expires            string
 	StorageClass       string
+	ObjectTagging      string
+	TaggingDirective   string
 }
 
 // InitiateMultipartUploadResult defines the result structure to initiate a multipart upload.
@@ -662,4 +679,22 @@ type ObjectTags struct {
 type ObjectTag struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
+}
+
+type BosShareLinkArgs struct {
+	Bucket          string `json:"bucket"`
+	Endpoint        string `json:"endpoint"`
+	Prefix          string `json:"prefix"`
+	ShareCode       string `json:"shareCode"`
+	DurationSeconds int64  `json:"durationSeconds"`
+}
+
+type BosShareResBody struct {
+	ShareUrl       string `json:"shareUrl"`
+	LinkExpireTime int64  `json:"linkExpireTime"`
+	ShareCode      string `json:"shareCode"`
+}
+
+type BucketVersioningArgs struct {
+	Status string `json:"status"`
 }

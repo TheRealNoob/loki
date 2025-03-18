@@ -22,7 +22,6 @@ import (
 	"github.com/grafana/loki/v3/pkg/logqlmodel/stats"
 	"github.com/grafana/loki/v3/pkg/storage/chunk/cache"
 	util_log "github.com/grafana/loki/v3/pkg/util/log"
-	"github.com/grafana/loki/v3/pkg/util/math"
 	"github.com/grafana/loki/v3/pkg/util/validation"
 )
 
@@ -289,10 +288,10 @@ func merge(extents []Extent, acc *accumulator) ([]Extent, error) {
 		return nil, err
 	}
 	return append(extents, Extent{
-		Start:    acc.Extent.Start,
-		End:      acc.Extent.End,
+		Start:    acc.Start,
+		End:      acc.End,
 		Response: anyResp,
-		TraceId:  acc.Extent.TraceId,
+		TraceId:  acc.TraceId,
 	}), nil
 }
 
@@ -386,7 +385,7 @@ func (s ResultsCache) partition(req Request, extents []Extent) ([]Request, []Res
 
 	// If start and end are the same (valid in promql), start == req.GetEnd() and we won't do the query.
 	// But we should only do the request if we don't have a valid cached response for it.
-	if req.GetStart() == req.GetEnd() && len(cachedResponses) == 0 {
+	if req.GetStart().Equal(req.GetEnd()) && len(cachedResponses) == 0 {
 		requests = append(requests, req)
 	}
 
@@ -394,7 +393,7 @@ func (s ResultsCache) partition(req Request, extents []Extent) ([]Request, []Res
 }
 
 func (s ResultsCache) filterRecentExtents(req Request, maxCacheFreshness time.Duration, extents []Extent) ([]Extent, error) {
-	step := math.Max64(1, req.GetStep())
+	step := max(1, req.GetStep())
 	maxCacheTime := (int64(model.Now().Add(-maxCacheFreshness)) / step) * step
 	for i := range extents {
 		// Never cache data for the latest freshness period.

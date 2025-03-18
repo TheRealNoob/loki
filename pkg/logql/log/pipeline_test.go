@@ -328,7 +328,7 @@ func TestDropLabelsPipeline(t *testing.T) {
 			[]Stage{
 				NewLogfmtParser(true, false),
 				NewJSONParser(),
-				NewDropLabels([]DropLabel{
+				NewDropLabels([]NamedLabelMatcher{
 					{
 						nil,
 						"__error__",
@@ -365,7 +365,7 @@ func TestDropLabelsPipeline(t *testing.T) {
 			[]Stage{
 				NewLogfmtParser(true, false),
 				NewJSONParser(),
-				NewDropLabels([]DropLabel{
+				NewDropLabels([]NamedLabelMatcher{
 					{
 						labels.MustNewMatcher(labels.MatchEqual, logqlmodel.ErrorLabel, errLogfmt),
 						"",
@@ -431,7 +431,7 @@ func TestKeepLabelsPipeline(t *testing.T) {
 			name: "keep all",
 			stages: []Stage{
 				NewLogfmtParser(false, false),
-				NewKeepLabels([]KeepLabel{}),
+				NewKeepLabels([]NamedLabelMatcher{}),
 			},
 			lines: [][]byte{
 				[]byte(`level=info ts=2020-10-18T18:04:22.147378997Z caller=metrics.go:81 status=200`),
@@ -467,7 +467,7 @@ func TestKeepLabelsPipeline(t *testing.T) {
 			name: "keep by name",
 			stages: []Stage{
 				NewLogfmtParser(false, false),
-				NewKeepLabels([]KeepLabel{
+				NewKeepLabels([]NamedLabelMatcher{
 					{
 						nil,
 						"level",
@@ -498,7 +498,7 @@ func TestKeepLabelsPipeline(t *testing.T) {
 			name: "keep by matcher",
 			stages: []Stage{
 				NewLogfmtParser(false, false),
-				NewKeepLabels([]KeepLabel{
+				NewKeepLabels([]NamedLabelMatcher{
 					{
 						labels.MustNewMatcher(labels.MatchEqual, "level", "info"),
 						"",
@@ -544,6 +544,42 @@ func TestKeepLabelsPipeline(t *testing.T) {
 		})
 	}
 
+}
+
+func TestUnsafeGetBytes(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []byte
+	}{
+		{
+			name:  "empty string",
+			input: "",
+			want:  nil,
+		},
+		{
+			name:  "simple string",
+			input: "hello",
+			want:  []byte{'h', 'e', 'l', 'l', 'o'},
+		},
+		{
+			name:  "string with spaces",
+			input: "hello world",
+			want:  []byte{'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd'},
+		},
+		{
+			name:  "string with special characters",
+			input: "hello\nworld\t!",
+			want:  []byte{'h', 'e', 'l', 'l', 'o', '\n', 'w', 'o', 'r', 'l', 'd', '\t', '!'},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := unsafeGetBytes(tt.input)
+			require.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func Benchmark_Pipeline(b *testing.B) {

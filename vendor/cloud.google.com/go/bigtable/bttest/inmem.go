@@ -333,10 +333,18 @@ func (s *server) ModifyColumnFamilies(ctx context.Context, req *btapb.ModifyColu
 				return true
 			})
 		} else if modify := mod.GetUpdate(); modify != nil {
-			if _, ok := tbl.families[mod.Id]; !ok {
+			newcf := newColumnFamily(req.Name+"/columnFamilies/"+mod.Id, 0, modify)
+			cf, ok := tbl.families[mod.Id]
+			if !ok {
 				return nil, fmt.Errorf("no such family %q", mod.Id)
 			}
-			newcf := newColumnFamily(req.Name+"/columnFamilies/"+mod.Id, 0, modify)
+			if cf.valueType != nil {
+				_, isOldAggregateType := cf.valueType.Kind.(*btapb.Type_AggregateType)
+				if isOldAggregateType && cf.valueType != newcf.valueType {
+					return nil, status.Errorf(codes.InvalidArgument, "Immutable fields 'value_type.aggregate_type' cannot be updated")
+				}
+			}
+
 			// assume that we ALWAYS want to replace by the new setting
 			// we may need partial update through
 			tbl.families[mod.Id] = newcf
@@ -580,6 +588,15 @@ func (s *server) ReadRows(req *btpb.ReadRowsRequest, stream btpb.Bigtable_ReadRo
 		return stream.Send(rrr)
 	}
 	return nil
+}
+
+func (s *server) GetPartitionsByTableName(name string) []*btpb.RowRange {
+	table, ok := s.tables[name]
+	if !ok {
+		return nil
+	}
+	return table.rowRanges()
+
 }
 
 // streamRow filters the given row and sends it via the given stream.
@@ -1453,6 +1470,7 @@ type table struct {
 	counter     uint64                   // increment by 1 when a new family is created
 	families    map[string]*columnFamily // keyed by plain family name
 	rows        *btree.BTree             // indexed by row key
+	partitions  []*btpb.RowRange         // partitions used in change stream
 	isProtected bool                     // whether this table has deletion protection
 }
 
@@ -1467,10 +1485,56 @@ func newTable(ctr *btapb.CreateTableRequest) *table {
 			c++
 		}
 	}
+
+	// Hard code the partitions for testing purpose.
+	rowRanges := []*btpb.RowRange{
+		{
+			StartKey: &btpb.RowRange_StartKeyClosed{StartKeyClosed: []byte("a")},
+			EndKey:   &btpb.RowRange_EndKeyClosed{EndKeyClosed: []byte("b")},
+		},
+		{
+			StartKey: &btpb.RowRange_StartKeyClosed{StartKeyClosed: []byte("c")},
+			EndKey:   &btpb.RowRange_EndKeyClosed{EndKeyClosed: []byte("d")},
+		},
+		{
+			StartKey: &btpb.RowRange_StartKeyClosed{StartKeyClosed: []byte("e")},
+			EndKey:   &btpb.RowRange_EndKeyClosed{EndKeyClosed: []byte("f")},
+		},
+		{
+			StartKey: &btpb.RowRange_StartKeyClosed{StartKeyClosed: []byte("g")},
+			EndKey:   &btpb.RowRange_EndKeyClosed{EndKeyClosed: []byte("h")},
+		},
+		{
+			StartKey: &btpb.RowRange_StartKeyClosed{StartKeyClosed: []byte("i")},
+			EndKey:   &btpb.RowRange_EndKeyClosed{EndKeyClosed: []byte("j")},
+		},
+		{
+			StartKey: &btpb.RowRange_StartKeyClosed{StartKeyClosed: []byte("k")},
+			EndKey:   &btpb.RowRange_EndKeyClosed{EndKeyClosed: []byte("l")},
+		},
+		{
+			StartKey: &btpb.RowRange_StartKeyClosed{StartKeyClosed: []byte("m")},
+			EndKey:   &btpb.RowRange_EndKeyClosed{EndKeyClosed: []byte("n")},
+		},
+		{
+			StartKey: &btpb.RowRange_StartKeyClosed{StartKeyClosed: []byte("o")},
+			EndKey:   &btpb.RowRange_EndKeyClosed{EndKeyClosed: []byte("p")},
+		},
+		{
+			StartKey: &btpb.RowRange_StartKeyClosed{StartKeyClosed: []byte("q")},
+			EndKey:   &btpb.RowRange_EndKeyClosed{EndKeyClosed: []byte("r")},
+		},
+		{
+			StartKey: &btpb.RowRange_StartKeyClosed{StartKeyClosed: []byte("s")},
+			EndKey:   &btpb.RowRange_EndKeyClosed{EndKeyClosed: []byte("z")},
+		},
+	}
+
 	return &table{
 		families:    fams,
 		counter:     c,
 		rows:        btree.New(btreeDegree),
+		partitions:  rowRanges,
 		isProtected: ctr.GetTable().GetDeletionProtection(),
 	}
 }
@@ -1567,6 +1631,10 @@ func (t *table) gcReadOnly() (toDelete []btree.Item) {
 	})
 
 	return toDelete
+}
+
+func (t *table) rowRanges() []*btpb.RowRange {
+	return t.partitions
 }
 
 type byRowKey []*row
